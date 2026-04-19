@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -130,9 +131,9 @@ func GetAdminFiles(c *gin.Context) {
 	for _, f := range files {
 		fileResponses = append(fileResponses, gin.H{
 			"id":         f.ID.Hex(),
-			"filename":   f.FileName,
-			"filesize":   f.FileSize,
-			"filetype":   f.FileType,
+			"file_name":  f.FileName,
+			"file_size":  f.FileSize,
+			"file_type":  f.FileType,
 			"created_at": f.CreatedAt,
 			"user_id":    f.UserID,
 		})
@@ -488,6 +489,12 @@ func HealthCheck(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
+var serverStartTime time.Time
+
+func init() {
+	serverStartTime = time.Now()
+}
+
 // HealthCheckStats returns health status with stats
 func HealthCheckStats(c *gin.Context) {
 	activeSessions := 0
@@ -496,9 +503,22 @@ func HealthCheckStats(c *gin.Context) {
 		return true
 	})
 
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
 	c.JSON(200, gin.H{
 		"status": "ok",
-		"uptime": time.Now().Unix(),
+		"uptime": time.Since(serverStartTime).Seconds(),
+		"system": gin.H{
+			"goroutines": runtime.NumGoroutine(),
+			"cpus":       runtime.NumCPU(),
+			"memory": gin.H{
+				"alloc":      m.Alloc,
+				"totalAlloc": m.TotalAlloc,
+				"sys":        m.Sys,
+				"numGC":      m.NumGC,
+			},
+		},
 		"uploads": gin.H{
 			"activeSessions": activeSessions,
 			"concurrency": gin.H{

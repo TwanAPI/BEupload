@@ -29,12 +29,15 @@ func main() {
 
 	mongoURI := os.Getenv("MONGODB_URI")
 	if mongoURI == "" {
-		mongoURI = "mongodb+srv://admin:Tuandzvcl@userupload.1zqgqci.mongodb.net/?appName=UserUpload"
+		log.Fatal("❌ MONGODB_URI environment variable is required")
 	}
 
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
-		jwtSecret = "TwanDz"
+		log.Fatal("❌ JWT_SECRET environment variable is required (min 32 characters)")
+	}
+	if len(jwtSecret) < 32 {
+		log.Fatal("❌ JWT_SECRET must be at least 32 characters long")
 	}
 
 	// Initialize MongoDB
@@ -68,9 +71,9 @@ func main() {
 		c.Next()
 	})
 
-	// Health check routes (no auth required)
+	// Health check routes
 	router.GET("/health", handlers.HealthCheck)
-	router.GET("/health/stats", handlers.HealthCheckStats)
+	router.GET("/health/stats", middleware.JWTAuth(), middleware.AdminRequired(), handlers.HealthCheckStats)
 
 	// Auth routes (no auth required)
 	authGroup := router.Group("/auth")

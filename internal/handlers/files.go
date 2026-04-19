@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,9 @@ import (
 
 var (
 	uploadSessions sync.Map // map[string]*models.UploadSession
+
+	// Security: maximum allowed file size (10GB)
+	maxFileSize int64 = 10 * 1024 * 1024 * 1024
 
 	// ⚡ Buffer pool: reuse 32MB buffers instead of allocating new ones each time
 	// Reduces GC pressure by ~90% during high-throughput uploads
@@ -83,6 +87,12 @@ func UploadChunk(c *gin.Context) {
 	fileSize, err := strconv.ParseInt(fileSizeStr, 10, 64)
 	if err != nil {
 		c.JSON(400, models.ErrorResponse{Error: "Invalid file size"})
+		return
+	}
+
+	// Security: enforce max file size
+	if fileSize <= 0 || fileSize > maxFileSize {
+		c.JSON(400, models.ErrorResponse{Error: fmt.Sprintf("File size must be between 1 byte and %s", utils.FormatFileSize(maxFileSize))})
 		return
 	}
 
@@ -408,30 +418,9 @@ func GetFiles(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	usersCollection := database.DB.Collection("users")
-
-	objID, err := primitive.ObjectIDFromHex(userID.(string))
-	if err != nil {
-		c.JSON(400, models.ErrorResponse{Error: "Invalid user ID format"})
-		return
-	}
-
-	// Check if admin
-	var user models.User
-	err = usersCollection.FindOne(ctx, bson.M{"_id": objID}).Decode(&user)
-	if err != nil {
-		c.JSON(500, models.ErrorResponse{Error: "Database error"})
-		return
-	}
-
+	// Always return only current user's files (admin uses /api/admin/files for all)
 	filesCollection := database.DB.Collection("files")
-	var query bson.M
-
-	if user.Role != "admin" {
-		query = bson.M{"user_id": userID}
-	} else {
-		query = bson.M{}
-	}
+	query := bson.M{"user_id": userID}
 
 	opts := options.Find()
 	opts.SetSort(bson.M{"created_at": -1})
@@ -524,13 +513,21 @@ func DeleteFile(c *gin.Context) {
 func DownloadFile(c *gin.Context) {
 	filename := c.Param("filename")
 
-	uploadsDir := filepath.Join("uploads")
-	targetPath := filepath.Join(uploadsDir, filename)
+	// Security: block null bytes and path traversal
+	if strings.ContainsAny(filename, "\x00") || strings.Contains(filename, "..") {
+		c.JSON(403, models.ErrorResponse{Error: "Access denied"})
+		return
+	}
 
-	// Security check - prevent path traversal
+	uploadsDir := filepath.Join("uploads")
+	// Clean the path to resolve any . or .. or double slashes
+	cleanFilename := filepath.Clean(filename)
+	targetPath := filepath.Join(uploadsDir, cleanFilename)
+
+	// Security: verify resolved path is within uploads directory
 	absUploads, _ := filepath.Abs(uploadsDir)
 	absTarget, _ := filepath.Abs(targetPath)
-	if len(absTarget) < len(absUploads) || absTarget[:len(absUploads)] != absUploads {
+	if !strings.HasPrefix(absTarget, absUploads+string(filepath.Separator)) {
 		c.JSON(403, models.ErrorResponse{Error: "Access denied"})
 		return
 	}

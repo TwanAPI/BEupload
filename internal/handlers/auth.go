@@ -171,6 +171,8 @@ func SignIn(c *gin.Context) {
 			Email:       user.Email,
 			DisplayName: user.DisplayName,
 			Username:    user.Username,
+			Role:        user.Role,
+			IsAdmin:     user.Role == "admin",
 		},
 	})
 }
