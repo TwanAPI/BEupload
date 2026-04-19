@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  # Go backend service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: "3001"
+      MONGODB_URI: ${MONGODB_URI:-mongodb+srv://admin:Tuandzvcl@userupload.1zqgqci.mongodb.net/?appName=UserUpload}
+      JWT_SECRET: ${JWT_SECRET:-TwanDz}
+      NODE_ENV: ${NODE_ENV:-development}
+    volumes:
+      - ./uploads:/app/uploads
+      - ./backend:/app/backend
+    depends_on:
+      - mongodb
+    networks:
+      - cloud-caddy-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Local MongoDB for development (optional - use MongoDB Atlas for production)
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-password}
+      MONGO_INITDB_DATABASE: file-caddy
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/init.js
+    networks:
+      - cloud-caddy-network
+    restart: unless-stopped
+    healthcheck:
+      test: echo 'db.adminCommand("ping")' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongodb_data:
+    driver: local
+
+networks:
+  cloud-caddy-network:
+    driver: bridge
