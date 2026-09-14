@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"runtime"
 	"time"
@@ -55,8 +56,9 @@ func main() {
 	router := gin.New()
 	router.Use(gin.Recovery())
 
-	// ⚡ Allow up to 256MB multipart form in memory (avoid disk swap for chunks)
-	router.MaxMultipartMemory = 256 << 20 // 256 MB
+	// ⚡ Reduced from 256MB → 32MB: chunks are typically 5-10MB
+	// 256MB per request was causing massive RAM usage under concurrency
+	router.MaxMultipartMemory = 32 << 20 // 32 MB
 
 	// Middleware
 	router.Use(middleware.CORSMiddleware())
@@ -87,6 +89,7 @@ func main() {
 	fileGroup.Use(middleware.JWTAuth())
 	{
 		fileGroup.POST("/upload", handlers.Upload)
+		fileGroup.PUT("/upload-stream", handlers.UploadStream) // ⚡ Zero-copy streaming upload
 		fileGroup.POST("/upload-chunk", handlers.UploadChunk)
 		fileGroup.GET("/upload-progress/:uploadId", handlers.UploadProgressCheck)
 		fileGroup.GET("", handlers.GetFiles)
@@ -123,10 +126,19 @@ func main() {
 		}
 	}()
 
-	// Start server
+	// ⚡ Custom HTTP server with proper timeouts
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
 	fmt.Printf("🚀 Server starting on http://localhost:%s\n", port)
-	fmt.Printf("⚡ GOMAXPROCS=%d | MaxMultipartMemory=256MB\n", runtime.NumCPU())
-	if err := router.Run(":" + port); err != nil {
+	fmt.Printf("⚡ GOMAXPROCS=%d | MaxMultipartMemory=32MB | IdleTimeout=120s\n", runtime.NumCPU())
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("❌ Server failed to start: %v", err)
 	}
 }

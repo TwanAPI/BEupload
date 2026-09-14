@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -79,10 +80,10 @@ func JWTAuth() gin.HandlerFunc {
 	}
 }
 
-// rateLimitEntry stores per-IP rate limit data
+// rateLimitEntry stores per-IP rate limit data — thread-safe with atomic operations
 type rateLimitEntry struct {
-	count       int
-	windowStart int64
+	count       atomic.Int64
+	windowStart atomic.Int64
 }
 
 // RateLimitMiddleware - thread-safe rate limiting using sync.Map
@@ -96,7 +97,7 @@ func RateLimitMiddleware(maxRequests int, windowMs int64) gin.HandlerFunc {
 			now := time.Now().Unix() * 1000
 			ipLimits.Range(func(key, value interface{}) bool {
 				entry := value.(*rateLimitEntry)
-				if now-entry.windowStart > windowMs*2 {
+				if now-entry.windowStart.Load() > windowMs*2 {
 					ipLimits.Delete(key)
 				}
 				return true
@@ -112,20 +113,23 @@ func RateLimitMiddleware(maxRequests int, windowMs int64) gin.HandlerFunc {
 		if c.Request.URL.Path == "/api/files/upload-chunk" {
 			// Allow 50000 chunk uploads per minute per IP (high but not unlimited)
 			chunkLimitKey := ip + ":chunk"
-			chunkVal, chunkLoaded := ipLimits.LoadOrStore(chunkLimitKey, &rateLimitEntry{count: 1, windowStart: now})
+			newChunkEntry := &rateLimitEntry{}
+			newChunkEntry.count.Store(1)
+			newChunkEntry.windowStart.Store(now)
+			chunkVal, chunkLoaded := ipLimits.LoadOrStore(chunkLimitKey, newChunkEntry)
 			if !chunkLoaded {
 				c.Next()
 				return
 			}
 			chunkEntry := chunkVal.(*rateLimitEntry)
-			if now-chunkEntry.windowStart > windowMs {
-				chunkEntry.count = 1
-				chunkEntry.windowStart = now
+			if now-chunkEntry.windowStart.Load() > windowMs {
+				chunkEntry.count.Store(1)
+				chunkEntry.windowStart.Store(now)
 				c.Next()
 				return
 			}
-			chunkEntry.count++
-			if chunkEntry.count > 50000 {
+			chunkEntry.count.Add(1)
+			if chunkEntry.count.Load() > 50000 {
 				c.JSON(429, gin.H{"error": "Upload rate limit exceeded"})
 				c.Abort()
 				return
@@ -134,7 +138,10 @@ func RateLimitMiddleware(maxRequests int, windowMs int64) gin.HandlerFunc {
 			return
 		}
 
-		val, loaded := ipLimits.LoadOrStore(ip, &rateLimitEntry{count: 1, windowStart: now})
+		newEntry := &rateLimitEntry{}
+		newEntry.count.Store(1)
+		newEntry.windowStart.Store(now)
+		val, loaded := ipLimits.LoadOrStore(ip, newEntry)
 		if !loaded {
 			c.Next()
 			return
@@ -143,15 +150,15 @@ func RateLimitMiddleware(maxRequests int, windowMs int64) gin.HandlerFunc {
 		entry := val.(*rateLimitEntry)
 
 		// Reset window if expired
-		if now-entry.windowStart > windowMs {
-			entry.count = 1
-			entry.windowStart = now
+		if now-entry.windowStart.Load() > windowMs {
+			entry.count.Store(1)
+			entry.windowStart.Store(now)
 			c.Next()
 			return
 		}
 
-		entry.count++
-		if entry.count > maxRequests {
+		entry.count.Add(1)
+		if int(entry.count.Load()) > maxRequests {
 			c.JSON(429, gin.H{"error": "Too many requests, please try again later"})
 			c.Abort()
 			return
